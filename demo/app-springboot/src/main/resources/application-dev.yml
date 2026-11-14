@@ -1,6 +1,7 @@
 planets:
   service:
     url: http://localhost:8091/planets
+    internal-url: ${PLANETS_INTERNAL_URL:http://localhost:8091/internal/planets}
 
 spring:
   security:

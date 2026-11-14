@@ -47,8 +47,17 @@ public class SecurityConfig {
 						.requestMatchers(new AntPathRequestMatcher("/public")).permitAll()
 						.requestMatchers(new AntPathRequestMatcher("/swagger-ui/**")).permitAll()
 						.requestMatchers(new AntPathRequestMatcher("/v3/api-docs/**")).permitAll()
+						// API HUMAINE : autorité dérivée d'un rôle REALM porté par un utilisateur.
+						// Jeton obtenu par authorization_code (navigateur) ou ROPC (tests).
 						.requestMatchers(new AntPathRequestMatcher("/planets"))
 						.hasAuthority(KeycloakJwtRolesConverter.PREFIX_RESOURCE_ROLE + "realm_user")
+						// API MACHINE : autorité dérivée d'un rôle CLIENT porté par le service
+						// account du client appelant. Jeton obtenu par client_credentials.
+						// Format produit par KeycloakJwtRolesConverter : ROLE_<clientId>_<role>
+						// => resource_access["service-planets"].roles = ["planets.read"]
+						// Un jeton humain n'a pas ce rôle : il prend un 403 ici, et c'est voulu.
+						.requestMatchers(new AntPathRequestMatcher("/internal/**"))
+						.hasAuthority(KeycloakJwtRolesConverter.PREFIX_RESOURCE_ROLE + "service-planets_planets.read")
 						.anyRequest().authenticated());
 
 		http.oauth2ResourceServer(

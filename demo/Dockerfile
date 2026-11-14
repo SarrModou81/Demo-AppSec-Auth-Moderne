@@ -36,5 +36,8 @@ WORKDIR /opt/keycloak
 
 # Garde ENTRYPOINT "kc.sh" et passe les options en CMD (plus flexible)
 ENTRYPOINT ["/opt/keycloak/bin/kc.sh"]
-CMD ["start", "--optimized", "--import-realm", "--proxy-headers", "xforwarded",
+# NB : un CMD au format JSON doit tenir sur une seule ligne logique. Sans la
+# continuation `\`, Docker lit la 2e ligne comme une instruction et échoue avec
+# « dockerfile parse error: unknown instruction ».
+CMD ["start", "--optimized", "--import-realm", "--proxy-headers", "xforwarded", \
      "--spi-theme-static-max-age=-1", "--spi-theme-cache-themes=false", "--spi-theme-cache-templates=false"]

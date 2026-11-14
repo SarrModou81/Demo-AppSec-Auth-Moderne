@@ -16,7 +16,12 @@ logging:
 
 planets:
   service:
+    # API HUMAINE du service aval — appelée avec le jeton de l'utilisateur connecté
+    # (grant authorization_code, propagé depuis la session).
     url: http://localhost:8091/planets
+    # API MACHINE du service aval — appelée avec un jeton obtenu par le client lui-même
+    # (grant client_credentials). Aucun utilisateur n'est impliqué.
+    internal-url: ${PLANETS_INTERNAL_URL:http://localhost:8091/internal/planets}
 
 spring:
   freemarker.cache: false
@@ -30,15 +35,41 @@ spring:
             user-name-attribute: preferred_username
 
         registration:
+          # ------------------------------------------------------------------
+          # (1) IDENTITÉ DÉLÉGUÉE — un HUMAIN s'authentifie, l'app agit en son nom.
+          #     grant authorization_code : redirection navigateur vers Keycloak.
+          # ------------------------------------------------------------------
           keycloak:
             client-id: app-springboot
             # Ne jamais mettre un secret en dur dans le code source !
             # Utiliser une variable d'environnement : export KEYCLOAK_CLIENT_SECRET=<votre_secret>
             client-secret: ${KEYCLOAK_CLIENT_SECRET}
             authorization-grant-type: authorization_code
-            
-            scope: 
+
+            scope:
               - openid
+
+          # ------------------------------------------------------------------
+          # (2) IDENTITÉ MACHINE — l'application agit EN SON PROPRE NOM.
+          #     grant client_credentials : aucun navigateur, aucun utilisateur,
+          #     aucun redirect_uri, aucun refresh_token. Le client EST le sujet.
+          #
+          #     Prérequis côté Keycloak (voir demo/keycloak/apply-m2m.sh) :
+          #       - client `app-m2m` avec « Service accounts roles » ACTIVÉ
+          #       - rôle client `planets.read` du client `service-planets`
+          #         affecté au service account `service-account-app-m2m`
+          #     Sans le rôle, le jeton est bien délivré mais le service aval
+          #     répond 403 : l'authentification n'est pas l'autorisation.
+          #
+          #     Secret : export M2M_CLIENT_SECRET=$(./demo/keycloak/apply-m2m.sh | ...)
+          #     ou lire la valeur affichée en fin de apply-m2m.sh.
+          # ------------------------------------------------------------------
+          keycloak-m2m:
+            provider: keycloak
+            client-id: app-m2m
+            client-secret: ${M2M_CLIENT_SECRET:}
+            authorization-grant-type: client_credentials
+            client-authentication-method: client_secret_basic
 
       resourceserver:
         jwt:

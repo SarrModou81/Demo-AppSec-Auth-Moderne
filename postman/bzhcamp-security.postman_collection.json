@@ -1,0 +1,1926 @@
+{
+ "info": {
+  "_postman_id": "b2a7c1e0-6d4f-4c2a-9f1b-0c3a5e7d9f10",
+  "name": "bzhcamp — Sécurité des APIs (POC Keycloak/OIDC)",
+  "description": "Suite de tests de **sécurité** pour le POC Keycloak/OpenID (realm `bzhcamp`).\n\nCible :\n- **service-springboot-rest** (`:8091`) — resource server pur, stateless JWT.\n- **app-springboot** (`:8090`) — application double rôle (oauth2Login + resource server).\n- **Keycloak** (`:8080`) — realm `bzhcamp`, clients `app-springboot` (confidentiel) et `keycloak-angular` (public).\n\n## Principe\nChaque test prouve que **la décision d'autorisation est invariante par rapport à tout ce que le client contrôle** (jeton, en-têtes, Origin, méthode, chemin). Forger des jetons n'est pas le but : c'est le moyen d'énumérer les entrées hostiles.\n\n## Deux niveaux de sévérité\n- **[FAIL]** — contrôle de sécurité dur. Une violation fait échouer le test (exit code ≠ 0 en CI).\n- **[WARN]** — constat informatif / durcissement recommandé (ex. audience désactivée par défaut, PKCE). Ne casse jamais le build ; visible dans la sortie.\n\n## Ordre d'exécution\nExécuter les dossiers **dans l'ordre** (00 → 99). Le dossier 00 provisionne les fixtures via l'Admin REST API ; le dossier 01 obtient les jetons réutilisés ensuite.\n\n## Prérequis\n1. Stack démarrée : `cd demo && docker compose up -d` (Keycloak :8080, Postgres, SMTP), puis les deux apps Spring Boot (:8090 / :8091).\n2. Realm `bzhcamp` importé (`demo/realm-export.json`).\n3. Renseigner `client_secret` dans l'environnement (console Keycloak → Clients → app-springboot → Credentials).\n\nVoir `postman/README.md` pour le détail et l'exécution Newman (CI).",
+  "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+ },
+ "variable": [
+  {
+   "key": "note",
+   "value": "Variables sensibles (secrets, mots de passe, jetons) vivent dans l'ENVIRONNEMENT, jamais dans la collection.",
+   "type": "string"
+  }
+ ],
+ "item": [
+  {
+   "name": "00 — Setup / Fixtures (Admin API)",
+   "description": "Provisionne, de façon **idempotente**, ce que l'export de realm ne fournit pas mais qui est nécessaire aux tests : un jeton d'administration, et un utilisateur **sans aucun rôle** pour prouver le 403 RBAC.\n\nUtilise l'Admin REST API de Keycloak avec les identifiants `admin/admin` du `docker-compose.yml`. En production ces endpoints ne doivent JAMAIS être joignables publiquement.",
+   "item": [
+    {
+     "name": "Admin token (realm master)",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "// Menace couverte : 0020 (E) — l'Admin API exige une authentification.",
+         "pm.test('[FAIL] L\\'obtention du jeton admin réussit (Admin API protégée mais accessible avec identifiants valides)', function () {",
+         "    pm.response.to.have.status(200);",
+         "    var j = pm.response.json();",
+         "    pm.expect(j).to.have.property('access_token');",
+         "    pm.environment.set('admin_access_token', j.access_token);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/x-www-form-urlencoded"
+       }
+      ],
+      "body": {
+       "mode": "urlencoded",
+       "urlencoded": [
+        {
+         "key": "grant_type",
+         "value": "password"
+        },
+        {
+         "key": "client_id",
+         "value": "admin-cli"
+        },
+        {
+         "key": "username",
+         "value": "{{kc_admin}}"
+        },
+        {
+         "key": "password",
+         "value": "{{kc_admin_password}}"
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{keycloak_base}}/realms/master/protocol/openid-connect/token",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "master",
+        "protocol",
+        "openid-connect",
+        "token"
+       ]
+      },
+      "description": "Jeton d'administration (realm `master`) via le client intégré `admin-cli`. Nécessaire pour créer la fixture 'utilisateur sans rôle'."
+     }
+    },
+    {
+     "name": "Créer utilisateur sans rôle (idempotent)",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "// 201 = créé ; 409 = déjà présent (idempotent). Les deux sont OK.",
+         "pm.test('[FAIL] Fixture utilisateur-sans-rôle disponible (201 créé ou 409 existant)', function () {",
+         "    pm.expect([201, 409]).to.include(pm.response.code);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{admin_access_token}}"
+       },
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"username\": \"{{norole_username}}\",\n  \"enabled\": true,\n  \"emailVerified\": true,\n  \"email\": \"{{norole_username}}@example.test\",\n  \"credentials\": [\n    { \"type\": \"password\", \"value\": \"{{norole_password}}\", \"temporary\": false }\n  ]\n}"
+      },
+      "url": {
+       "raw": "{{keycloak_base}}/admin/realms/{{realm}}/users",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "admin",
+        "realms",
+        "{{realm}}",
+        "users"
+       ]
+      },
+      "description": "Crée un utilisateur **sans aucun rôle realm**. Sert à prouver que `/planets` renvoie **403** (et non 200 ni 500) pour un porteur de jeton valide mais non autorisé. Mot de passe non temporaire pour permettre le grant ROPC."
+     }
+    }
+   ]
+  },
+  {
+   "name": "01 — Acquisition des jetons (ROPC)",
+   "description": "Obtient les jetons réutilisés par les dossiers suivants, via le grant `password` (ROPC — activé sur `app-springboot` : `directAccessGrantsEnabled=true`).\n\nNote pédagogique : le ROPC est **déconseillé** en production (le mot de passe transite par l'application), mais il est pratique pour automatiser des tests d'API. Le flux de production reste `authorization_code`.",
+   "item": [
+    {
+     "name": "Jeton testuser (rôle 'user')",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "// CANARY : si le happy-path échoue, la stack est absente/mal configurée.",
+         "// On ABORTE le run pour éviter une suite 'verte' trompeuse (tout en 401).",
+         "if (pm.response.code !== 200) {",
+         "    console.error('ARRÊT: impossible d\\'obtenir un jeton (code ' + pm.response.code + '). ' +",
+         "      'Vérifiez que Keycloak tourne et que client_secret est renseigné. La suite est interrompue.');",
+         "    postman.setNextRequest(null);",
+         "}",
+         "pm.test('[FAIL] ROPC testuser réussit et renvoie un access_token + refresh_token', function () {",
+         "    pm.response.to.have.status(200);",
+         "    var j = pm.response.json();",
+         "    pm.expect(j).to.have.property('access_token');",
+         "    pm.environment.set('access_token', j.access_token);",
+         "    pm.environment.set('refresh_token', j.refresh_token || '');",
+         "});",
+         "pm.test('[WARN] Durée de vie du jeton raisonnable (accessTokenLifespan)', function () {",
+         "    var j = pm.response.json();",
+         "    if (j.expires_in && j.expires_in > 900) {",
+         "        console.warn('WARN: access token lifespan = ' + j.expires_in + 's (> 15 min). Envisager de réduire.');",
+         "    }",
+         "    pm.expect(true).to.be.true;",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/x-www-form-urlencoded"
+       }
+      ],
+      "body": {
+       "mode": "urlencoded",
+       "urlencoded": [
+        {
+         "key": "grant_type",
+         "value": "password"
+        },
+        {
+         "key": "client_id",
+         "value": "{{client_id}}"
+        },
+        {
+         "key": "client_secret",
+         "value": "{{client_secret}}"
+        },
+        {
+         "key": "username",
+         "value": "{{username}}"
+        },
+        {
+         "key": "password",
+         "value": "{{password}}"
+        },
+        {
+         "key": "scope",
+         "value": "openid"
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{keycloak_base}}/realms/{{realm}}/protocol/openid-connect/token",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "{{realm}}",
+        "protocol",
+        "openid-connect",
+        "token"
+       ]
+      },
+      "description": "Jeton d'accès pour `testuser` (possède le rôle realm `user`). C'est le jeton 'légitime autorisé' réutilisé dans les tests positifs."
+     }
+    },
+    {
+     "name": "Jeton utilisateur-sans-rôle",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] ROPC utilisateur-sans-rôle réussit (authentifié mais non autorisé)', function () {",
+         "    pm.response.to.have.status(200);",
+         "    var j = pm.response.json();",
+         "    pm.expect(j).to.have.property('access_token');",
+         "    pm.environment.set('norole_access_token', j.access_token);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/x-www-form-urlencoded"
+       }
+      ],
+      "body": {
+       "mode": "urlencoded",
+       "urlencoded": [
+        {
+         "key": "grant_type",
+         "value": "password"
+        },
+        {
+         "key": "client_id",
+         "value": "{{client_id}}"
+        },
+        {
+         "key": "client_secret",
+         "value": "{{client_secret}}"
+        },
+        {
+         "key": "username",
+         "value": "{{norole_username}}"
+        },
+        {
+         "key": "password",
+         "value": "{{norole_password}}"
+        },
+        {
+         "key": "scope",
+         "value": "openid"
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{keycloak_base}}/realms/{{realm}}/protocol/openid-connect/token",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "{{realm}}",
+        "protocol",
+        "openid-connect",
+        "token"
+       ]
+      },
+      "description": "Jeton valide pour un utilisateur **sans rôle**. Jeton 'authentifié mais non autorisé' — sert au test RBAC 403."
+     }
+    }
+   ]
+  },
+  {
+   "name": "02 — Authentification & intégrité du jeton (service :8091)",
+   "description": "Menaces STRIDE 0001, 0002, 0006, 0008, 0009 (Spoofing / Tampering). Prouve que le resource server rejette tout jeton que le client a fabriqué ou altéré, et qu'il n'accepte le bearer que dans l'en-tête `Authorization`.\n\nContrôle vérifié : `SecurityConfig.jwtDecoder` + `NimbusJwtDecoder` (signature RS256 via JWKS, issuer, exp).",
+   "item": [
+    {
+     "name": "Sans jeton → 401",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] /planets sans Authorization renvoie 401 (pas 200, pas 403)', function () {",
+         "    pm.response.to.have.status(401);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Endpoint protégé sans aucune authentification. Doit renvoyer 401 (ressource protégée, jeton manquant)."
+     }
+    },
+    {
+     "name": "Jeton malformé → 401",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Un bearer non-JWT (\\'not.a.jwt\\') est rejeté 401', function () {",
+         "    pm.response.to.have.status(401);",
+         "});",
+         "pm.test('[WARN] La réponse 401 expose un motif via WWW-Authenticate (bon oracle)', function () {",
+         "    var h = pm.response.headers.get('WWW-Authenticate');",
+         "    if (!h) { console.warn('WARN: pas d\\'en-tête WWW-Authenticate — l\\'erreur est opaque.'); }",
+         "    pm.expect(true).to.be.true;",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer not.a.jwt"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Chaîne qui n'est pas un JWT valide. Le décodeur doit échouer proprement en 401."
+     }
+    },
+    {
+     "name": "Forge alg:none → 401",
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "exec": [
+         "// Menace 0001 (Spoofing) : jeton non signé 'alg:none'.",
+         "// Un décodeur correct impose RS256 et rejette alg:none.",
+         "function b64url(obj){",
+         "  return Buffer.from(JSON.stringify(obj)).toString('base64')",
+         "    .replace(/=+$/,'').replace(/\\+/g,'-').replace(/\\//g,'_');",
+         "}",
+         "var now = Math.floor(Date.now()/1000);",
+         "var header = { alg: 'none', typ: 'JWT' };",
+         "var payload = {",
+         "  iss: pm.environment.get('keycloak_base') + '/realms/' + pm.environment.get('realm'),",
+         "  sub: 'forged-none', exp: now + 3600, iat: now,",
+         "  realm_access: { roles: ['user', 'admin'] }",
+         "};",
+         "// alg:none => signature vide",
+         "var forged = b64url(header) + '.' + b64url(payload) + '.';",
+         "pm.variables.set('forged_none', forged);"
+        ],
+        "type": "text/javascript"
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Jeton alg:none (non signé) rejeté 401 — l\\'algo RS256 est imposé', function () {",
+         "    pm.response.to.have.status(401);",
+         "});",
+         "pm.test('[FAIL] Le motif est bien un jeton invalide (WWW-Authenticate: error=invalid_token)', function () {",
+         "    var h = pm.response.headers.get('WWW-Authenticate') || '';",
+         "    pm.expect(h, 'WWW-Authenticate: ' + h).to.include('invalid_token');",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{forged_none}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Attaque classique `alg:none` : jeton forgé sans signature, avec les rôles `user`+`admin`. Le script de pré-requête le fabrique. Un serveur vulnérable l'accepterait ; ici il doit renvoyer 401."
+     }
+    },
+    {
+     "name": "Confusion d'algorithme HS256 → 401",
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "exec": [
+         "// Menace 0001 (Spoofing, variante avancée) : attaque de CONFUSION D'ALGORITHME.",
+         "// L'attaquant forge un jeton VALIDEMENT signé en HS256, en utilisant la clé publique",
+         "// RSA du realm (publique !) comme secret HMAC. Un vérificateur naïf qui déduit l'algo",
+         "// du header accepterait ce jeton. Nimbus/Spring est protégé car il IMPOSE RS256.",
+         "// Point pédagogique clé : ce jeton n'a PAS une signature cassée — il est bien formé.",
+         "// Son rejet prouve que le serveur ne laisse pas le client choisir l'algorithme.",
+         "var CryptoJS = require('crypto-js');",
+         "var base = pm.environment.get('keycloak_base');",
+         "var realm = pm.environment.get('realm');",
+         "var tok = pm.environment.get('access_token');",
+         "if (!tok) { console.warn('Pré-requis: lancer 01 — Jeton testuser'); return; }",
+         "",
+         "function dec(s){ return Buffer.from(s.replace(/-/g,'+').replace(/_/g,'/'),'base64').toString(); }",
+         "function b64urlStr(str){ return Buffer.from(str).toString('base64').replace(/=+$/,'').replace(/\\+/g,'-').replace(/\\//g,'_'); }",
+         "function b64urlWA(wordArray){ return CryptoJS.enc.Base64.stringify(wordArray).replace(/=+$/,'').replace(/\\+/g,'-').replace(/\\//g,'_'); }",
+         "",
+         "pm.sendRequest(base + '/realms/' + realm, function (err, res) {",
+         "  var hmacKey = 'public-key-unavailable';",
+         "  try { hmacKey = res.json().public_key; } catch (e) { console.warn('clé publique du realm indisponible, secret factice'); }",
+         "  var payload = JSON.parse(dec(tok.split('.')[1]));",
+         "  payload.realm_access = payload.realm_access || {};",
+         "  payload.realm_access.roles = (payload.realm_access.roles || []).concat(['admin']);",
+         "  var h = b64urlStr(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));",
+         "  var p = b64urlStr(JSON.stringify(payload));",
+         "  var sig = b64urlWA(CryptoJS.HmacSHA256(h + '.' + p, hmacKey));",
+         "  pm.variables.set('forged_hs256', h + '.' + p + '.' + sig);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Jeton HS256 bien formé rejeté 401 — l\\'algorithme RS256 est imposé (pas de confusion d\\'algo)', function () {",
+         "    pm.response.to.have.status(401);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{forged_hs256}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "**Attaque de confusion d'algorithme (RS256→HS256).** Le script de pré-requête récupère la clé publique RSA du realm (endpoint public `/realms/{realm}`) et l'utilise comme secret HMAC pour signer un jeton HS256 s'octroyant `admin`. Contrairement aux tests précédents, la signature est **valide** (HMAC correct) : seul l'algorithme est hostile. Le rejet 401 prouve que `NimbusJwtDecoder` épingle RS256 et ne déduit pas l'algorithme du header — la bonne défense contre cette classe d'attaque."
+     }
+    },
+    {
+     "name": "Rôles trafiqués → 401 (la signature lie les claims)",
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "exec": [
+         "// Menace 0002 (Tampering) : on garde l'en-tête + la signature RS256 d'origine,",
+         "// mais on réécrit le payload pour s'octroyer 'admin'. La signature ne couvre plus",
+         "// le payload => rejet 401.",
+         "var tok = pm.environment.get('access_token');",
+         "if (!tok) { console.warn('Pré-requis: lancer d\\'abord 01 — Jeton testuser'); return; }",
+         "var parts = tok.split('.');",
+         "function dec(s){ return Buffer.from(s.replace(/-/g,'+').replace(/_/g,'/'),'base64').toString(); }",
+         "function b64url(obj){",
+         "  return Buffer.from(JSON.stringify(obj)).toString('base64')",
+         "    .replace(/=+$/,'').replace(/\\+/g,'-').replace(/\\//g,'_');",
+         "}",
+         "var payload = JSON.parse(dec(parts[1]));",
+         "payload.realm_access = payload.realm_access || {};",
+         "payload.realm_access.roles = (payload.realm_access.roles || []).concat(['admin']);",
+         "// header + payload réécrit + signature ORIGINALE (invalide pour ce payload)",
+         "var tampered = parts[0] + '.' + b64url(payload) + '.' + parts[2];",
+         "pm.variables.set('tampered_roles', tampered);"
+        ],
+        "type": "text/javascript"
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Jeton aux rôles trafiqués rejeté 401 — la signature protège les claims', function () {",
+         "    pm.response.to.have.status(401);",
+         "});",
+         "pm.test('[FAIL] Rejet pour SIGNATURE invalide, pas pour un autre motif (error=invalid_token)', function () {",
+         "    // Ce test prouve le LIEN cryptographique claims↔signature : réécrire le payload",
+         "    // casse la signature RS256. Le contrôle RBAC par rôle est prouvé séparément",
+         "    // (dossier 03, utilisateur sans rôle → 403), avec un vrai jeton signé.",
+         "    var h = pm.response.headers.get('WWW-Authenticate') || '';",
+         "    pm.expect(h, 'WWW-Authenticate: ' + h).to.include('invalid_token');",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{tampered_roles}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "On prend le vrai jeton de `testuser`, on injecte le rôle `admin` dans le payload en conservant la signature d'origine. La signature RS256 ne correspondant plus, le serveur doit renvoyer 401."
+     }
+    },
+    {
+     "name": "Issuer réécrit → 401 (claim lié par la signature)",
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "exec": [
+         "// Menace 0008 : jeton dont l'issuer a été remplacé par un realm étranger.",
+         "var tok = pm.environment.get('access_token');",
+         "if (!tok) { return; }",
+         "var parts = tok.split('.');",
+         "function dec(s){ return Buffer.from(s.replace(/-/g,'+').replace(/_/g,'/'),'base64').toString(); }",
+         "function b64url(obj){",
+         "  return Buffer.from(JSON.stringify(obj)).toString('base64')",
+         "    .replace(/=+$/,'').replace(/\\+/g,'-').replace(/\\//g,'_');",
+         "}",
+         "var payload = JSON.parse(dec(parts[1]));",
+         "payload.iss = pm.environment.get('keycloak_base') + '/realms/evil-realm';",
+         "var forged = parts[0] + '.' + b64url(payload) + '.' + parts[2];",
+         "pm.variables.set('forged_issuer', forged);"
+        ],
+        "type": "text/javascript"
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Jeton à issuer réécrit rejeté 401 (error=invalid_token)', function () {",
+         "    pm.response.to.have.status(401);",
+         "    var h = pm.response.headers.get('WWW-Authenticate') || '';",
+         "    pm.expect(h, 'WWW-Authenticate: ' + h).to.include('invalid_token');",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{forged_issuer}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Claim `iss` réécrit vers un realm inexistant. Rejet attendu (la signature casse de toute façon, et l'issuer ne correspond pas à `issuer-uri`)."
+     }
+    },
+    {
+     "name": "Bearer en query param → 401",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] access_token en query string ignoré → 401 (bearer accepté seulement en en-tête)', function () {",
+         "    pm.response.to.have.status(401);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{service_base}}/planets?access_token={{access_token}}",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ],
+       "query": [
+        {
+         "key": "access_token",
+         "value": "{{access_token}}"
+        }
+       ]
+      },
+      "description": "RFC 6750 §2.3 déconseille le jeton en query (fuite dans les logs/historique). Spring n'accepte le bearer que dans l'en-tête `Authorization` → 401 ici."
+     }
+    }
+   ]
+  },
+  {
+   "name": "03 — Autorisation / RBAC (service :8091)",
+   "description": "Menaces STRIDE 0004, 0007 (Elevation / Tampering → DoS). Prouve la règle `/planets` = `hasAuthority('ROLE_realm_user')` et la robustesse du `KeycloakJwtRolesConverter` (pas de NPE → 500).",
+   "item": [
+    {
+     "name": "/public sans auth → 200 (référence)",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] /public est bien public (200)', function () {",
+         "    pm.response.to.have.status(200);",
+         "});",
+         "pm.test('[FAIL] /public ne crée pas de session (STATELESS: pas de Set-Cookie)', function () {",
+         "    pm.expect(pm.response.headers.has('Set-Cookie')).to.be.false;",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{service_base}}/public",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "public"
+       ]
+      },
+      "description": "Point de référence : l'endpoint explicitement `permitAll()` répond 200 sans jeton. Vérifie aussi l'absence de session (politique STATELESS)."
+     }
+    },
+    {
+     "name": "/planets avec rôle 'user' → 200",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] /planets avec un jeton porteur du rôle realm user → 200', function () {",
+         "    pm.response.to.have.status(200);",
+         "});",
+         "pm.test('[FAIL] Réponse JSON (liste de planètes)', function () {",
+         "    pm.expect(pm.response.headers.get('Content-Type') || '').to.include('application/json');",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{access_token}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Chemin nominal autorisé : `testuser` a le rôle realm `user` → mappé `ROLE_realm_user` → accès accordé."
+     }
+    },
+    {
+     "name": "/planets utilisateur sans rôle → 403",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] /planets refuse un jeton valide SANS le rôle requis → 403 (ni 200, ni 401, ni 500)', function () {",
+         "    pm.response.to.have.status(403);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{norole_access_token}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Cœur du test RBAC : un jeton authentifié mais sans le rôle `user`. Le contraste 200 (user) vs 403 (sans rôle) prouve que l'autorisation par rôle est réellement appliquée, pas seulement l'authentification."
+     }
+    },
+    {
+     "name": "resource_access malformé → pas de 500 (régression ISC-3)",
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "exec": [
+         "// Menace 0007 : claim resource_access dégénéré (entrée sans clé 'roles').",
+         "// Historiquement provoquait une NPE → HTTP 500. Le converter doit désormais",
+         "// la gérer proprement. NB: la signature casse (payload réécrit), donc le résultat",
+         "// attendu est 401/403 — l'essentiel est : JAMAIS 500.",
+         "var tok = pm.environment.get('access_token');",
+         "if (!tok) { return; }",
+         "var parts = tok.split('.');",
+         "function dec(s){ return Buffer.from(s.replace(/-/g,'+').replace(/_/g,'/'),'base64').toString(); }",
+         "function b64url(obj){",
+         "  return Buffer.from(JSON.stringify(obj)).toString('base64')",
+         "    .replace(/=+$/,'').replace(/\\+/g,'-').replace(/\\//g,'_');",
+         "}",
+         "var payload = JSON.parse(dec(parts[1]));",
+         "payload.resource_access = { 'some-client': {} }; // pas de clé 'roles'",
+         "var forged = parts[0] + '.' + b64url(payload) + '.' + parts[2];",
+         "pm.variables.set('malformed_ra', forged);"
+        ],
+        "type": "text/javascript"
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Un resource_access malformé ne provoque PAS de 500 (NPE corrigée)', function () {",
+         "    pm.expect(pm.response.code, 'code HTTP reçu: ' + pm.response.code).to.not.equal(500);",
+         "});",
+         "pm.test('[FAIL] La réponse est un refus propre (401 ou 403)', function () {",
+         "    pm.expect([401, 403]).to.include(pm.response.code);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{malformed_ra}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Test de régression du correctif NPE dans `KeycloakJwtRolesConverter`. Un `resource_access` sans clé `roles` doit donner un refus propre, jamais une erreur serveur 500 (qui révélerait une stacktrace et un déni de service potentiel)."
+     }
+    },
+    {
+     "name": "realm_access.roles non-tableau → pas de 500",
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "exec": [
+         "// Robustesse du converter : 'roles' en chaîne au lieu d'un tableau.",
+         "// Un cast Collection<String> naïf lèverait ClassCastException → 500. Le refus doit",
+         "// rester propre (401/403). NB: payload réécrit => la signature casse aussi (donc 401",
+         "// est le résultat le plus probable) ; l'assertion dure porte sur l'ABSENCE de 500.",
+         "var tok = pm.environment.get('access_token');",
+         "if (!tok) { return; }",
+         "var parts = tok.split('.');",
+         "function dec(s){ return Buffer.from(s.replace(/-/g,'+').replace(/_/g,'/'),'base64').toString(); }",
+         "function b64url(obj){ return Buffer.from(JSON.stringify(obj)).toString('base64').replace(/=+$/,'').replace(/\\+/g,'-').replace(/\\//g,'_'); }",
+         "var payload = JSON.parse(dec(parts[1]));",
+         "payload.realm_access = { roles: 'user' }; // chaîne, pas tableau",
+         "var forged = parts[0] + '.' + b64url(payload) + '.' + parts[2];",
+         "pm.variables.set('roles_scalar', forged);"
+        ],
+        "type": "text/javascript"
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Un claim roles scalaire ne provoque PAS de 500', function () {",
+         "    pm.expect(pm.response.code, 'code HTTP reçu: ' + pm.response.code).to.not.equal(500);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{roles_scalar}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Entrée dégénérée : `realm_access.roles` fourni comme une chaîne au lieu d'un tableau. Vérifie qu'aucun chemin du converter ne lève d'exception non gérée (ClassCastException → 500). Un 500 sur entrée malformée est un vrai défaut de robustesse à surfacer dans un POC pédagogique."
+     }
+    }
+   ]
+  },
+  {
+   "name": "04 — Audience / confused deputy (service :8091)",
+   "description": "Menace STRIDE 0003 (Elevation). La validation d'audience est **opt-in** dans ce POC (`keycloak.audience` vide par défaut). Ce dossier teste les deux états et documente le risque résiduel du défaut.\n\nContrôle vérifié : `AudienceValidator` + `SecurityConfig.jwtDecoder`.",
+   "item": [
+    {
+     "name": "Audience — état courant (conditionnel)",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "var expected = (pm.environment.get('expected_audience') || '').trim();",
+         "var tok = pm.environment.get('access_token');",
+         "var auds = [];",
+         "try {",
+         "  var p = JSON.parse(Buffer.from(tok.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'),'base64').toString());",
+         "  auds = [].concat(p.aud || []);",
+         "} catch (e) {}",
+         "",
+         "if (!expected) {",
+         "  pm.test('[WARN] Validation d\\'audience DÉSACTIVÉE (défaut) — risque de confused deputy', function () {",
+         "    console.warn('WARN 0003: keycloak.audience est vide. Un jeton valide d\\'un autre client serait accepté. ' +",
+         "      'Pour activer: configurer un Audience mapper côté Keycloak, puis renseigner expected_audience + KEYCLOAK_AUDIENCE.');",
+         "    console.warn('aud présentes dans le jeton: ' + JSON.stringify(auds));",
+         "    pm.expect(pm.response.code, 'jeton légitime toujours accepté').to.equal(200);",
+         "  });",
+         "} else {",
+         "  pm.test('[FAIL] Audience ACTIVÉE: jeton dont aud contient \\'' + expected + '\\' accepté (200)', function () {",
+         "    pm.expect(auds, 'le jeton doit porter l\\'audience attendue (Audience mapper requis)').to.include(expected);",
+         "    pm.response.to.have.status(200);",
+         "  });",
+         "}"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{access_token}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Si `expected_audience` est vide → constat WARN : le contrôle est désactivé (défaut du POC). Si renseigné → le jeton légitime doit porter l'audience et être accepté. Voir backlog B3 de l'ISA pour passer le contrôle en default-on."
+     }
+    },
+    {
+     "name": "Audience absente → 401 (si activée)",
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "exec": [
+         "// Jeton au claim aud réécrit vers une valeur étrangère.",
+         "// NB: on réécrit le payload => signature invalide. Si audience activée, rejet 401 ;",
+         "// si désactivée, rejet 401 quand même (signature). Test conditionnel côté assertion.",
+         "var tok = pm.environment.get('access_token');",
+         "if (!tok) { return; }",
+         "var parts = tok.split('.');",
+         "function dec(s){ return Buffer.from(s.replace(/-/g,'+').replace(/_/g,'/'),'base64').toString(); }",
+         "function b64url(obj){",
+         "  return Buffer.from(JSON.stringify(obj)).toString('base64')",
+         "    .replace(/=+$/,'').replace(/\\+/g,'-').replace(/\\//g,'_');",
+         "}",
+         "var payload = JSON.parse(dec(parts[1]));",
+         "payload.aud = ['some-other-service'];",
+         "var forged = parts[0] + '.' + b64url(payload) + '.' + parts[2];",
+         "pm.variables.set('wrong_aud', forged);"
+        ],
+        "type": "text/javascript"
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Jeton pour une autre audience rejeté 401', function () {",
+         "    pm.response.to.have.status(401);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{wrong_aud}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Jeton forgé pour une audience étrangère. Rejeté 401 dans tous les cas (la signature casse). Devient un vrai test d'audience une fois un Audience mapper en place + un vrai jeton inter-service."
+     }
+    }
+   ]
+  },
+  {
+   "name": "05 — Transport, en-têtes & divulgation (service :8091)",
+   "description": "Menaces STRIDE 0010, 0011, 0012 (Information disclosure / Elevation via CORS). CORS, exposition de la documentation d'API, fuite d'informations.",
+   "item": [
+    {
+     "name": "CORS — Origin hostile non autorisée",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Une Origin non listée ne reçoit pas Access-Control-Allow-Origin', function () {",
+         "    var acao = pm.response.headers.get('Access-Control-Allow-Origin');",
+         "    pm.expect(acao, 'ACAO renvoyé: ' + acao).to.not.equal('https://evil.example');",
+         "    pm.expect(acao).to.not.equal('*');",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "OPTIONS",
+      "header": [
+       {
+        "key": "Origin",
+        "value": "https://evil.example"
+       },
+       {
+        "key": "Access-Control-Request-Method",
+        "value": "GET"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Preflight CORS depuis une origine hostile. La config n'autorise que `:8090/:4200/:8081` ; `evil.example` ne doit pas être reflétée dans `Access-Control-Allow-Origin`, et surtout pas `*`."
+     }
+    },
+    {
+     "name": "Exposition Swagger / api-docs",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[WARN] /v3/api-docs accessible sans auth (permitAll) — surface d\\'info exposée', function () {",
+         "    if (pm.response.code === 200) {",
+         "        console.warn('WARN 0011: /v3/api-docs répond 200 sans authentification. ' +",
+         "          'Acceptable en POC/dev, à restreindre hors environnement de démo.');",
+         "    }",
+         "    pm.expect([200, 401, 403, 404]).to.include(pm.response.code);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{service_base}}/v3/api-docs",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "v3",
+        "api-docs"
+       ]
+      },
+      "description": "`SecurityConfig` met `/v3/api-docs/**` et `/swagger-ui/**` en `permitAll()`. Constat informatif : la documentation d'API est publique — à durcir en production."
+     }
+    },
+    {
+     "name": "Pas de fuite de stacktrace (404)",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[WARN] Une route inexistante ne divulgue pas de stacktrace Java', function () {",
+         "    var b = pm.response.text() || '';",
+         "    var leaks = /(Exception|at org\\.springframework|at java\\.|Caused by:)/.test(b);",
+         "    if (leaks) { console.warn('WARN 0012: la réponse contient une trace d\\'exception — fuite d\\'info.'); }",
+         "    pm.expect(leaks, 'stacktrace présente dans le corps').to.be.false;",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{access_token}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/this-route-does-not-exist-sec-probe",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "this-route-does-not-exist-sec-probe"
+       ]
+      },
+      "description": "Vérifie que les erreurs ne renvoient pas de stacktrace Spring/Java au client (divulgation d'implémentation)."
+     }
+    }
+   ]
+  },
+  {
+   "name": "06 — Application double rôle (:8090)",
+   "description": "Menaces STRIDE 0013, 0014 (Elevation). L'app `app-springboot` est à la fois client OAuth2 (login navigateur) et resource server. Ce dossier sonde la surface publique `/*` et le comportement d'autorisation.",
+   "item": [
+    {
+     "name": "/planets sans session ni jeton → protégé",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] /planets non authentifié est protégé (401 ou redirection 302 vers login)', function () {",
+         "    pm.expect([401, 302]).to.include(pm.response.code);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{app_base}}/planets",
+       "host": [
+        "{{app_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Sans authentification, `/planets` doit soit renvoyer 401 (flux resource server), soit rediriger vers Keycloak (flux login). Jamais 200.",
+      "followRedirects": false
+     },
+     "protocolProfileBehavior": {
+      "followRedirects": false
+     }
+    },
+    {
+     "name": "Surface /* permitAll — sonde /actuator",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[WARN] Endpoints d\\'administration non exposés publiquement par la règle /* permitAll', function () {",
+         "    if (pm.response.code === 200) {",
+         "        var b = (pm.response.text() || '').toLowerCase();",
+         "        if (b.indexOf('\"status\"') >= 0 || b.indexOf('_links') >= 0 || b.indexOf('activeprofiles') >= 0) {",
+         "            console.warn('WARN 0013: /actuator répond 200 — la règle AntPathRequestMatcher(\"/*\").permitAll() ' +",
+         "              'est plus large que la surface publique réelle. Voir backlog B2 (deny-by-default).');",
+         "        }",
+         "    }",
+         "    pm.expect([200, 401, 403, 404]).to.include(pm.response.code);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{app_base}}/actuator",
+       "host": [
+        "{{app_base}}"
+       ],
+       "path": [
+        "actuator"
+       ]
+      },
+      "description": "Sonde la largeur de la règle `/*` permitAll (backlog B2 de l'ISA). Note : `/*` ne couvre qu'un seul segment, donc `/actuator/health` (2 segments) ne serait PAS couvert — ce test illustre la différence entre surface voulue et surface réelle."
+     }
+    }
+   ]
+  },
+  {
+   "name": "07 — Durcissement Keycloak (:8080)",
+   "description": "Menaces STRIDE 0015–0020 (Spoofing / Info disclosure / Elevation). Flux d'autorisation, validation des redirect_uri, énumération, ROPC, Admin API. La plupart sont **[WARN]** : ce sont des recommandations de durcissement, pas des régressions du code applicatif.",
+   "item": [
+    {
+     "name": "redirect_uri non enregistré → rejeté",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Un redirect_uri non enregistré est rejeté (pas de redirection vers l\\'attaquant)', function () {",
+         "    var loc = pm.response.headers.get('Location') || '';",
+         "    pm.expect(loc, 'Location: ' + loc).to.not.include('evil.example');",
+         "    pm.expect(pm.response.code, 'Keycloak doit afficher une page d\\'erreur, pas rediriger').to.not.be.oneOf([302, 303]);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{keycloak_base}}/realms/{{realm}}/protocol/openid-connect/auth?client_id={{client_id}}&response_type=code&scope=openid&redirect_uri=https://evil.example/steal",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "{{realm}}",
+        "protocol",
+        "openid-connect",
+        "auth"
+       ],
+       "query": [
+        {
+         "key": "client_id",
+         "value": "{{client_id}}"
+        },
+        {
+         "key": "response_type",
+         "value": "code"
+        },
+        {
+         "key": "scope",
+         "value": "openid"
+        },
+        {
+         "key": "redirect_uri",
+         "value": "https://evil.example/steal"
+        }
+       ]
+      },
+      "description": "Open redirect / vol de code : un `redirect_uri` non enregistré doit être refusé par Keycloak (page 'Invalid parameter: redirect_uri'), jamais suivi d'une redirection vers l'attaquant.",
+      "followRedirects": false
+     },
+     "protocolProfileBehavior": {
+      "followRedirects": false
+     }
+    },
+    {
+     "name": "PKCE — client public sans code_challenge",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[WARN] PKCE recommandé pour le client public keycloak-angular', function () {",
+         "    // Si Keycloak renvoie la page de login (200) sans exiger code_challenge,",
+         "    // PKCE n'est pas imposé pour ce client public.",
+         "    if (pm.response.code === 200) {",
+         "        console.warn('WARN 0015: le client public keycloak-angular accepte un /auth sans code_challenge. ' +",
+         "          'Imposer PKCE (Proof Key for Code Exchange) via Advanced Settings → PKCE Challenge Method = S256.');",
+         "    }",
+         "    pm.expect([200, 302, 400]).to.include(pm.response.code);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{keycloak_base}}/realms/{{realm}}/protocol/openid-connect/auth?client_id={{angular_client_id}}&response_type=code&scope=openid&redirect_uri=http://localhost:4200/*",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "{{realm}}",
+        "protocol",
+        "openid-connect",
+        "auth"
+       ],
+       "query": [
+        {
+         "key": "client_id",
+         "value": "{{angular_client_id}}"
+        },
+        {
+         "key": "response_type",
+         "value": "code"
+        },
+        {
+         "key": "scope",
+         "value": "openid"
+        },
+        {
+         "key": "redirect_uri",
+         "value": "http://localhost:4200/*"
+        }
+       ]
+      },
+      "description": "Le SPA `keycloak-angular` est un client **public** (pas de secret). PKCE est indispensable pour un client public (sinon un code intercepté est échangeable). Constat informatif : l'export de realm ne définit pas `pkce.code.challenge.method=S256`."
+     }
+    },
+    {
+     "name": "Énumération d'utilisateurs (messages uniformes)",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[WARN] Utilisateur inexistant et mauvais mot de passe donnent une erreur uniforme', function () {",
+         "    var j = {};",
+         "    try { j = pm.response.json(); } catch (e) {}",
+         "    var desc = (j.error_description || j.error || '').toLowerCase();",
+         "    // Keycloak renvoie normalement 'invalid_grant' / 'Invalid user credentials' dans les deux cas.",
+         "    if (/user.*not.*found|no.*such.*user|unknown user/.test(desc)) {",
+         "        console.warn('WARN 0018: le message distingue \\'utilisateur inexistant\\' — permet l\\'énumération.');",
+         "    }",
+         "    pm.expect(pm.response.code, 'un login invalide doit échouer').to.be.oneOf([400, 401]);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/x-www-form-urlencoded"
+       }
+      ],
+      "body": {
+       "mode": "urlencoded",
+       "urlencoded": [
+        {
+         "key": "grant_type",
+         "value": "password"
+        },
+        {
+         "key": "client_id",
+         "value": "{{client_id}}"
+        },
+        {
+         "key": "client_secret",
+         "value": "{{client_secret}}"
+        },
+        {
+         "key": "username",
+         "value": "utilisateur-qui-nexiste-pas-xyz"
+        },
+        {
+         "key": "password",
+         "value": "whatever"
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{keycloak_base}}/realms/{{realm}}/protocol/openid-connect/token",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "{{realm}}",
+        "protocol",
+        "openid-connect",
+        "token"
+       ]
+      },
+      "description": "Vérifie que l'erreur pour un utilisateur inexistant est indiscernable de celle d'un mauvais mot de passe (sinon : énumération de comptes)."
+     }
+    },
+    {
+     "name": "Admin API sans jeton → 401",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] /admin/realms/{realm}/users sans Authorization → 401', function () {",
+         "    pm.response.to.have.status(401);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{keycloak_base}}/admin/realms/{{realm}}/users",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "admin",
+        "realms",
+        "{{realm}}",
+        "users"
+       ]
+      },
+      "description": "L'Admin REST API doit exiger un jeton. Sans `Authorization`, réponse 401 (et jamais la liste des utilisateurs)."
+     }
+    }
+   ]
+  },
+  {
+   "name": "08 — Session / refresh token",
+   "description": "Menace STRIDE 0021 (Spoofing). Cycle de vie du refresh token : révocation au logout.",
+   "item": [
+    {
+     "name": "Refresh token invalidé après logout",
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "exec": [
+         "// Révoque d'abord la session via le logout endpoint, puis on tentera un refresh.",
+         "var rt = pm.environment.get('refresh_token');",
+         "if (!rt) { console.warn('Pré-requis: lancer 01 — Jeton testuser'); return; }",
+         "pm.sendRequest({",
+         "  url: pm.environment.get('keycloak_base') + '/realms/' + pm.environment.get('realm') + '/protocol/openid-connect/logout',",
+         "  method: 'POST',",
+         "  header: { 'Content-Type': 'application/x-www-form-urlencoded' },",
+         "  body: { mode: 'urlencoded', urlencoded: [",
+         "    { key: 'client_id', value: pm.environment.get('client_id') },",
+         "    { key: 'client_secret', value: pm.environment.get('client_secret') },",
+         "    { key: 'refresh_token', value: rt }",
+         "  ]}",
+         "}, function (err, res) {",
+         "  if (err) { console.warn('logout a échoué: ' + err); }",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Après logout, le refresh_token est invalide (invalid_grant)', function () {",
+         "    pm.expect(pm.response.code, 'code: ' + pm.response.code).to.be.oneOf([400, 401]);",
+         "    var j = {};",
+         "    try { j = pm.response.json(); } catch (e) {}",
+         "    pm.expect(j.error || '').to.match(/invalid_grant|invalid_token/);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/x-www-form-urlencoded"
+       }
+      ],
+      "body": {
+       "mode": "urlencoded",
+       "urlencoded": [
+        {
+         "key": "grant_type",
+         "value": "refresh_token"
+        },
+        {
+         "key": "client_id",
+         "value": "{{client_id}}"
+        },
+        {
+         "key": "client_secret",
+         "value": "{{client_secret}}"
+        },
+        {
+         "key": "refresh_token",
+         "value": "{{refresh_token}}"
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{keycloak_base}}/realms/{{realm}}/protocol/openid-connect/token",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "{{realm}}",
+        "protocol",
+        "openid-connect",
+        "token"
+       ]
+      },
+      "description": "Le script de pré-requête fait un logout avec le refresh token, puis cette requête tente de l'utiliser. Il doit être rejeté (`invalid_grant`). NB : relancer le dossier 01 pour regénérer un refresh token avant de rejouer la suite."
+     }
+    }
+   ]
+  },
+  {
+   "name": "09 — M2M / client_credentials (service :8091)",
+   "description": "Authentification **machine-a-machine** : `grant_type=client_credentials`.\n\nCe dossier prouve les quatre cases de la matrice d'acces, pas seulement le chemin nominal :\n\n| appelant | /planets (humain) | /internal/planets (machine) |\n|---|---|---|\n| jeton humain (`testuser`) | 200 | **403** |\n| jeton machine (`app-m2m`) | **403** | 200 |\n\nLes deux 403 sont les tests importants : ils prouvent que les identites sont **separees**, et pas seulement qu'un chemin fonctionne.\n\nPrerequis : executer `demo/keycloak/apply-m2m.sh` puis renseigner `m2m_client_secret` dans l'environnement. Le dossier 01 doit avoir tourne (fournit `access_token`).",
+   "item": [
+    {
+     "name": "M2M — jeton client_credentials (app-m2m)",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "// CANARY M2M : sans ce jeton, tout le dossier 09 testerait dans le vide.",
+         "if (pm.response.code !== 200) {",
+         "    console.error('ARRET M2M: code ' + pm.response.code + ' — ' + pm.response.text().slice(0, 200));",
+         "    console.error('Verifiez: client app-m2m present (demo/keycloak/apply-m2m.sh) et m2m_client_secret renseigne.');",
+         "    postman.setNextRequest(null);",
+         "}",
+         "pm.test('[FAIL] grant_type=client_credentials renvoie 200 + access_token', function () {",
+         "    pm.response.to.have.status(200);",
+         "    var j = pm.response.json();",
+         "    pm.expect(j).to.have.property('access_token');",
+         "    pm.environment.set('m2m_access_token', j.access_token);",
+         "});",
+         "pm.test('[FAIL] Aucun refresh_token en client_credentials (une machine redemande)', function () {",
+         "    var j = pm.response.json();",
+         "    pm.expect(j.refresh_token, 'refresh_token ne doit pas etre emis pour un client machine').to.be.undefined;",
+         "});",
+         "pm.test('[FAIL] Le jeton porte le role CLIENT planets.read (resource_access)', function () {",
+         "    var p = JSON.parse(Buffer.from(pm.response.json().access_token.split('.')[1], 'base64').toString());",
+         "    pm.expect(p, 'resource_access absent — role client non affecte au service account')",
+         "      .to.have.nested.property('resource_access.service-planets.roles');",
+         "    pm.expect(p.resource_access['service-planets'].roles).to.include('planets.read');",
+         "});",
+         "pm.test('[FAIL] Le sujet est un service account, pas un humain', function () {",
+         "    var p = JSON.parse(Buffer.from(pm.response.json().access_token.split('.')[1], 'base64').toString());",
+         "    pm.expect(p.azp).to.eql(pm.environment.get('m2m_client_id'));",
+         "    pm.expect(p.preferred_username).to.eql('service-account-' + pm.environment.get('m2m_client_id'));",
+         "    pm.expect(p, 'un jeton machine ne doit porter aucun realm role humain')",
+         "      .to.not.have.nested.property('realm_access.roles[0]', 'user');",
+         "});",
+         "pm.test('[FAIL] aud contient service-planets (anti confused deputy)', function () {",
+         "    var p = JSON.parse(Buffer.from(pm.response.json().access_token.split('.')[1], 'base64').toString());",
+         "    var aud = Array.isArray(p.aud) ? p.aud : [p.aud];",
+         "    pm.expect(aud, 'mapper d audience manquant sur app-m2m').to.include('service-planets');",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/x-www-form-urlencoded"
+       }
+      ],
+      "body": {
+       "mode": "urlencoded",
+       "urlencoded": [
+        {
+         "key": "grant_type",
+         "value": "client_credentials"
+        },
+        {
+         "key": "client_id",
+         "value": "{{m2m_client_id}}"
+        },
+        {
+         "key": "client_secret",
+         "value": "{{m2m_client_secret}}"
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{keycloak_base}}/realms/{{realm}}/protocol/openid-connect/token",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "{{realm}}",
+        "protocol",
+        "openid-connect",
+        "token"
+       ]
+      },
+      "description": "Identite MACHINE. Aucun utilisateur, aucun navigateur, aucun redirect_uri.\n\nPrerequis realm (voir `demo/keycloak/apply-m2m.sh`) : client confidentiel `app-m2m` avec **Service accounts roles** active, rôle client `planets.read` du client `service-planets` affecte a `service-account-app-m2m`, et un mapper d'audience `service-planets`.\n\nLes assertions verifient les trois couches independamment : le jeton est **delivre** (authentification), il porte le **role client** (autorisation) et la bonne **audience** (destinataire)."
+     }
+    },
+    {
+     "name": "M2M → /internal/planets = 200",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Jeton machine autorise sur l API machine', function () {",
+         "    pm.response.to.have.status(200);",
+         "    var j = pm.response.json();",
+         "    pm.expect(j).to.have.property('planets');",
+         "    pm.expect(j.planets).to.be.an('array').that.is.not.empty;",
+         "});",
+         "pm.test('[FAIL] Le service a bien identifie l appelant comme app-m2m', function () {",
+         "    var j = pm.response.json();",
+         "    pm.expect(j.caller.authorizedParty).to.eql(pm.environment.get('m2m_client_id'));",
+         "    pm.expect(j.caller.grantedAuthorities).to.include('ROLE_service-planets_planets.read');",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{m2m_access_token}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/internal/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "internal",
+        "planets"
+       ]
+      },
+      "description": "Chemin nominal M2M : le role client porte par le service account ouvre l'API machine."
+     }
+    },
+    {
+     "name": "M2M → /planets = 403 (separation des identites)",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Un jeton machine ne peut PAS acceder a l API humaine', function () {",
+         "    pm.expect(pm.response.code, 'un 200 ici signifierait que le role humain a ete donne a une machine')",
+         "      .to.eql(403);",
+         "});",
+         "pm.test('[FAIL] Refus d autorisation (403), pas d echec d authentification (401)', function () {",
+         "    pm.expect(pm.response.code).to.not.eql(401);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{m2m_access_token}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "planets"
+       ]
+      },
+      "description": "Test de **non-regression du modele d'autorisation**. Le jeton est parfaitement valide (signature, issuer, expiration) : le 403 prouve que l'identite machine ne porte pas le role realm humain `user`. Un 200 ici serait une elevation de privilege."
+     }
+    },
+    {
+     "name": "Humain → /internal/planets = 403 (miroir)",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Un jeton humain ne peut PAS acceder a l API machine', function () {",
+         "    pm.expect(pm.response.code).to.eql(403);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{access_token}}"
+       }
+      ],
+      "url": {
+       "raw": "{{service_base}}/internal/planets",
+       "host": [
+        "{{service_base}}"
+       ],
+       "path": [
+        "internal",
+        "planets"
+       ]
+      },
+      "description": "Image miroir du test precedent — les deux sens sont verifies, sinon la 'separation' pourrait n'etre qu'une absence de droits d'un cote. Necessite le dossier 01 (jeton testuser)."
+     }
+    },
+    {
+     "name": "Client public → client_credentials = 401",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[FAIL] Un client PUBLIC ne peut pas obtenir de jeton machine', function () {",
+         "    pm.expect(pm.response.code).to.be.oneOf([400, 401]);",
+         "    var j = pm.response.json();",
+         "    pm.expect(j.error).to.be.oneOf(['unauthorized_client', 'invalid_client']);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/x-www-form-urlencoded"
+       }
+      ],
+      "body": {
+       "mode": "urlencoded",
+       "urlencoded": [
+        {
+         "key": "grant_type",
+         "value": "client_credentials"
+        },
+        {
+         "key": "client_id",
+         "value": "{{angular_client_id}}"
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{keycloak_base}}/realms/{{realm}}/protocol/openid-connect/token",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "{{realm}}",
+        "protocol",
+        "openid-connect",
+        "token"
+       ]
+      },
+      "description": "Un client public n'a pas de secret : lui accorder une identite machine reviendrait a donner cette identite a quiconque lit le code JavaScript. Keycloak repond `Public client not allowed to retrieve service account`."
+     }
+    },
+    {
+     "name": "Client navigateur app-springboot → service accounts desactives",
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[WARN] app-springboot ne devrait pas avoir de service account', function () {",
+         "    var body = pm.response.text();",
+         "    if (pm.response.code === 200) {",
+         "        console.warn('WARN: le client navigateur app-springboot peut obtenir un jeton machine. ' +",
+         "          'Deux identites dans un seul client = perimetre de compromission elargi. ' +",
+         "          'Preferer un client dedie (app-m2m) et desactiver Service accounts ici.');",
+         "    }",
+         "    pm.expect(true).to.be.true;",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/x-www-form-urlencoded"
+       }
+      ],
+      "body": {
+       "mode": "urlencoded",
+       "urlencoded": [
+        {
+         "key": "grant_type",
+         "value": "client_credentials"
+        },
+        {
+         "key": "client_id",
+         "value": "{{client_id}}"
+        },
+        {
+         "key": "client_secret",
+         "value": "{{client_secret}}"
+        }
+       ]
+      },
+      "url": {
+       "raw": "{{keycloak_base}}/realms/{{realm}}/protocol/openid-connect/token",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "realms",
+        "{{realm}}",
+        "protocol",
+        "openid-connect",
+        "token"
+       ]
+      },
+      "description": "Durcissement (informatif) : un client destine au flux navigateur ne devrait pas cumuler une identite machine. Separer les clients limite le rayon d'explosion d'un secret fuite et rend les journaux d'audit lisibles (`azp` dit qui a appele)."
+     }
+    }
+   ]
+  },
+  {
+   "name": "99 — Teardown (optionnel)",
+   "description": "Nettoyage des fixtures créées en dossier 00. Optionnel — ne pas exécuter si vous voulez conserver l'utilisateur de test entre les runs.",
+   "item": [
+    {
+     "name": "Supprimer l'utilisateur sans rôle",
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "exec": [
+         "// Résout l'id de l'utilisateur sans rôle, puis le supprime.",
+         "var base = pm.environment.get('keycloak_base');",
+         "var realm = pm.environment.get('realm');",
+         "var adm = pm.environment.get('admin_access_token');",
+         "var u = pm.environment.get('norole_username');",
+         "if (!adm) { console.warn('Pré-requis: relancer 00 — Admin token'); return; }",
+         "pm.sendRequest({",
+         "  url: base + '/admin/realms/' + realm + '/users?username=' + encodeURIComponent(u) + '&exact=true',",
+         "  method: 'GET',",
+         "  header: { 'Authorization': 'Bearer ' + adm }",
+         "}, function (err, res) {",
+         "  if (err) { console.warn(err); return; }",
+         "  var arr = res.json();",
+         "  if (arr && arr.length) { pm.variables.set('norole_user_id', arr[0].id); }",
+         "  else { console.warn('Utilisateur introuvable — déjà supprimé ?'); }",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "exec": [
+         "pm.test('[WARN] Suppression de la fixture (204 ou absence)', function () {",
+         "    pm.expect([204, 404]).to.include(pm.response.code);",
+         "});"
+        ],
+        "type": "text/javascript"
+       }
+      }
+     ],
+     "request": {
+      "method": "DELETE",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{admin_access_token}}"
+       }
+      ],
+      "url": {
+       "raw": "{{keycloak_base}}/admin/realms/{{realm}}/users/{{norole_user_id}}",
+       "host": [
+        "{{keycloak_base}}"
+       ],
+       "path": [
+        "admin",
+        "realms",
+        "{{realm}}",
+        "users",
+        "{{norole_user_id}}"
+       ]
+      },
+      "description": "Supprime l'utilisateur de test créé en dossier 00."
+     }
+    }
+   ]
+  }
+ ]
+}

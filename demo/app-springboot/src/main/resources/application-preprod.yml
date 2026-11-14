@@ -1,6 +1,7 @@
 planets:
   service:
     url: http://poc-keycloak-service-preprod:8091/planets
+    internal-url: ${PLANETS_INTERNAL_URL:http://poc-keycloak-service-preprod:8091/internal/planets}
 
 spring:
   security:
