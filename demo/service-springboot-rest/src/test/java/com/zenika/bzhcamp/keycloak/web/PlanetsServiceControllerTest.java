@@ -5,12 +5,14 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -24,11 +26,13 @@ class PlanetsServiceControllerTest {
     private PlanetsService planetsService;
 
     @Test
-    @WithMockUser(authorities = "ROLE_realm_user")
     void getPlanets_shouldReturn200_whenAuthenticated() throws Exception {
         when(planetsService.getPlanets()).thenReturn(List.of("Tatooine", "Naboo"));
 
-        mockMvc.perform(get("/planets"))
+        mockMvc.perform(get("/planets")
+                        .with(jwt()
+                                .jwt(j -> j.subject("user-test"))
+                                .authorities(new SimpleGrantedAuthority("ROLE_realm_user"))))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType("application/json"))
                 .andExpect(jsonPath("$[0]").value("Tatooine"))
