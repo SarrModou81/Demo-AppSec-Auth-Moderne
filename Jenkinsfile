@@ -351,7 +351,7 @@ pipeline {
                             -e SPRING_PROFILES_ACTIVE=uat \
                             -e KEYCLOAK_CLIENT_SECRET="${KC_SECRET}" \
                             -e KEYCLOAK_ISSUER_URI="${KEYCLOAK_URL}/realms/bzhcamp" \
-                            --health-cmd="wget -qO- http://localhost:8090/actuator/health || exit 1" \
+                            --health-cmd="wget -qO- http://localhost:8090/ || exit 1" \
                             --health-interval=15s \
                             --health-retries=5 \
                             --restart unless-stopped \
@@ -412,7 +412,7 @@ pipeline {
                             -e SPRING_PROFILES_ACTIVE=preprod \
                             -e KEYCLOAK_CLIENT_SECRET="${KC_SECRET}" \
                             -e KEYCLOAK_ISSUER_URI="${KEYCLOAK_URL}/realms/bzhcamp" \
-                            --health-cmd="wget -qO- http://localhost:8090/actuator/health || exit 1" \
+                            --health-cmd="wget -qO- http://localhost:8090/ || exit 1" \
                             --health-interval=15s \
                             --health-retries=5 \
                             --restart unless-stopped \
