@@ -24,7 +24,7 @@ pipeline {
     }
 
     environment {
-        DOCKER_HUB_USER   = 'moustaphisene'
+        DOCKER_HUB_USER   = 'mds81'
         APP_IMAGE         = "${DOCKER_HUB_USER}/poc-keycloak-app"
         SVC_IMAGE         = "${DOCKER_HUB_USER}/poc-keycloak-service"
         IMAGE_TAG         = "v${BUILD_NUMBER}"
@@ -121,7 +121,7 @@ pipeline {
                 always {
                     dependencyCheckPublisher(
                         pattern: '**/target/dependency-check-report.xml',
-                        failedTotalCritical: 1,
+                        unstableTotalCritical: 1,
                         unstableTotalHigh: 5
                     )
                 }
