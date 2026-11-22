@@ -241,7 +241,7 @@ pipeline {
                 stage('Scan App Image') {
                     steps {
                         sh '''
-                            trivy image \
+                            trivy image --timeout 20m --scanners vuln \
                                 --exit-code 0 \
                                 --severity HIGH,CRITICAL \
                                 --format table \
@@ -259,7 +259,7 @@ pipeline {
                 stage('Scan Service Image') {
                     steps {
                         sh '''
-                            trivy image \
+                            trivy image --timeout 20m --scanners vuln \
                                 --exit-code 0 \
                                 --severity HIGH,CRITICAL \
                                 --format table \
