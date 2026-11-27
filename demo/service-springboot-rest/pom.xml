@@ -22,9 +22,11 @@
 
 		<!-- Surcharges de sécurité (versions corrigées d'après Trivy) -->
 		<jackson-bom.version>2.21.7</jackson-bom.version>
-		<tomcat.version>10.1.62</tomcat.version>
 		<spring-framework.version>6.2.19</spring-framework.version>
-		<commons-lang3.version>3.18.0</commons-lang3.version>
+		<netty.version>4.1.141.Final</netty.version>
+		<freemarker.version>2.3.35</freemarker.version>
+		<spring-ws.version>4.1.4</spring-ws.version>
+		<tomcat.version>10.1.62</tomcat.version>
 
 		<!-- SonarQube -->
 		<sonar.projectKey>poc-keycloak-service</sonar.projectKey>
